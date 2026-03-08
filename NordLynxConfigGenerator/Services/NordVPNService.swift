@@ -47,11 +47,12 @@ nonisolated struct NordVPNService: Sendable {
     private static let retryBaseDelay: TimeInterval = 1.0
 
     private var session: URLSession {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 45
+        config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
-        config.httpMaximumConnectionsPerHost = 6
+        config.httpMaximumConnectionsPerHost = 8
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
     }
 
@@ -74,12 +75,17 @@ nonisolated struct NordVPNService: Sendable {
     }
 
     func fetchServers(limit: Int, countryId: Int? = nil, vpnProtocol: VPNProtocol = .wireguardUDP) async throws -> [ServerResponse] {
-        var urlString = "\(Self.baseURL)?limit=\(limit)&filters[servers_technologies][identifier]=\(vpnProtocol.rawValue)"
+        let clampedLimit = max(1, min(50, limit))
+        var components = URLComponents(string: Self.baseURL)
+        components?.queryItems = [
+            URLQueryItem(name: "limit", value: "\(clampedLimit)"),
+            URLQueryItem(name: "filters[servers_technologies][identifier]", value: vpnProtocol.rawValue)
+        ]
         if let countryId {
-            urlString += "&filters[country_id]=\(countryId)"
+            components?.queryItems?.append(URLQueryItem(name: "filters[country_id]", value: "\(countryId)"))
         }
 
-        guard let url = URL(string: urlString) else {
+        guard let url = components?.url else {
             throw NordVPNError.invalidURL
         }
 
@@ -104,7 +110,7 @@ nonisolated struct NordVPNService: Sendable {
 
         let data = try await performRequestWithRetry(url: url)
 
-        guard let content = String(data: data, encoding: .utf8), !content.isEmpty else {
+        guard let content = String(data: data, encoding: .utf8), !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw NordVPNError.ovpnDownloadFailed(hostname)
         }
 
@@ -115,9 +121,16 @@ nonisolated struct NordVPNService: Sendable {
         var lastError: (any Error)?
 
         for attempt in 0..<Self.maxRetries {
+            try Task.checkCancellation()
+
             do {
                 let (data, response) = try await performRequest(url: url)
                 try validateResponse(response)
+
+                guard !data.isEmpty else {
+                    throw NordVPNError.connectionFailed("Empty response body.")
+                }
+
                 return data
             } catch let error as NordVPNError where isRetryable(error) {
                 lastError = error
@@ -126,6 +139,8 @@ nonisolated struct NordVPNService: Sendable {
                     let jitter = Double.random(in: 0...0.5)
                     try await Task.sleep(for: .seconds(delay + jitter))
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 throw error
             }
@@ -151,10 +166,14 @@ nonisolated struct NordVPNService: Sendable {
     private func performRequest(url: URL) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(from: url)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as URLError where error.code == .timedOut {
             throw NordVPNError.timeout
         } catch let error as URLError where error.code == .notConnectedToInternet || error.code == .networkConnectionLost {
             throw NordVPNError.connectionFailed("No internet connection.")
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch let error as URLError {
             throw NordVPNError.connectionFailed(error.localizedDescription)
         }
@@ -178,6 +197,8 @@ nonisolated struct NordVPNService: Sendable {
             "Missing key: \(key.stringValue)"
         case .typeMismatch(let type, let context):
             "Type mismatch for \(type) at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
+        case .dataCorrupted(let context):
+            "Corrupted data at \(context.codingPath.map(\.stringValue).joined(separator: "."))"
         default:
             error.localizedDescription
         }

@@ -81,8 +81,29 @@ struct ContentView: View {
             Text("WireGuard & OpenVPN configs from NordVPN")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            activeKeyBadge
         }
         .padding(.top, 20)
+    }
+
+    private var activeKeyBadge: some View {
+        Button {
+            showSettings = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "key.horizontal.fill")
+                    .font(.caption2)
+                Text(viewModel.activeKeyName)
+                    .font(.caption.weight(.semibold))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(accentColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(accentColor.opacity(0.12), in: .capsule)
+        }
     }
 
     private var inputSection: some View {

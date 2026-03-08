@@ -9,7 +9,7 @@ nonisolated enum GenerationState: Sendable, Equatable {
 
 @Observable
 @MainActor
-class ConfigViewModel {
+final class ConfigViewModel {
     var serverLimit: Int = 5
     var configs: [GeneratedConfig] = []
     var state: GenerationState = .idle
@@ -31,6 +31,11 @@ class ConfigViewModel {
     private let service = NordVPNService()
     private let generator = ConfigGenerator()
     private let exportService = ExportService()
+    private var countriesLoaded: Bool = false
+
+    var activeKeyName: String {
+        ConfigGenerator.activeAccessKey.name
+    }
 
     var canGenerate: Bool {
         if case .loading = state { return false }
@@ -61,18 +66,22 @@ class ConfigViewModel {
 
     var filteredExportURLs: [URL] {
         guard let folder = savedFolderURL else { return [] }
-        return filteredConfigs.map { folder.appending(path: $0.fileName) }
+        return filteredConfigs.compactMap { config in
+            let url = folder.appending(path: config.fileName)
+            return FileManager.default.fileExists(atPath: url.path()) ? url : nil
+        }
     }
 
     func loadCountries() async {
-        guard countries.isEmpty else { return }
+        guard !countriesLoaded else { return }
         isLoadingCountries = true
+        defer { isLoadingCountries = false }
         do {
             countries = try await service.fetchCountries()
+            countriesLoaded = true
         } catch {
             countries = []
         }
-        isLoadingCountries = false
     }
 
     func selectCountry(_ country: CountryResponse?) {
@@ -110,6 +119,8 @@ class ConfigViewModel {
             state = .success(generated.count)
         } catch let error as NordVPNError {
             state = .error(error.localizedDescription)
+        } catch is CancellationError {
+            state = .idle
         } catch {
             state = .error(error.localizedDescription)
         }
@@ -125,6 +136,7 @@ class ConfigViewModel {
         guard let folderURL = savedFolderURL else { return }
         isExporting = true
         exportedURL = nil
+        defer { isExporting = false }
 
         do {
             switch format {
@@ -142,7 +154,6 @@ class ConfigViewModel {
         } catch {
             exportedURL = nil
         }
-        isExporting = false
     }
 
     func reset() {

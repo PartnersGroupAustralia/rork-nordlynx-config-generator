@@ -1,27 +1,68 @@
 import Foundation
 
 nonisolated struct ConfigGenerator: Sendable {
-    private static let defaultPrivateKey = "e9f2abb927fb478e7c61afed90ee4cae8e3094b47418748ea7e518c955a0a0d1"
     private static let serviceID = "HEVpnj1BCmWLoddTkN9fSedR"
-    static let accessKeyStorageKey = "nordlynx_access_key"
+    static let selectedKeyIDStorageKey = "nordlynx_selected_key_id"
+    static let customKeyStorageKey = "nordlynx_custom_key"
+    static let customKeyNameStorageKey = "nordlynx_custom_key_name"
 
-    static var activePrivateKey: String {
-        let stored = UserDefaults.standard.string(forKey: accessKeyStorageKey) ?? ""
-        return stored.isEmpty ? defaultPrivateKey : stored
+    static var selectedKeyID: String {
+        UserDefaults.standard.string(forKey: selectedKeyIDStorageKey) ?? AccessKey.nick.id
     }
 
-    static func updateAccessKey(_ newKey: String) {
-        let trimmed = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            UserDefaults.standard.removeObject(forKey: accessKeyStorageKey)
-        } else {
-            UserDefaults.standard.set(trimmed, forKey: accessKeyStorageKey)
+    static var activeAccessKey: AccessKey {
+        let keyID = selectedKeyID
+        if let preset = AccessKey.presets.first(where: { $0.id == keyID }) {
+            return preset
+        }
+        if keyID == "custom" {
+            let key = UserDefaults.standard.string(forKey: customKeyStorageKey) ?? ""
+            let name = UserDefaults.standard.string(forKey: customKeyNameStorageKey) ?? "Custom"
+            if !key.isEmpty {
+                return AccessKey(id: "custom", name: name, key: key, isPreset: false)
+            }
+        }
+        return .nick
+    }
+
+    static var activePrivateKey: String {
+        activeAccessKey.key
+    }
+
+    static func selectKey(_ keyID: String) {
+        UserDefaults.standard.set(keyID, forKey: selectedKeyIDStorageKey)
+    }
+
+    static func saveCustomKey(name: String, key: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else { return }
+        UserDefaults.standard.set(trimmedKey, forKey: customKeyStorageKey)
+        UserDefaults.standard.set(trimmedName.isEmpty ? "Custom" : trimmedName, forKey: customKeyNameStorageKey)
+        UserDefaults.standard.set("custom", forKey: selectedKeyIDStorageKey)
+    }
+
+    static func removeCustomKey() {
+        UserDefaults.standard.removeObject(forKey: customKeyStorageKey)
+        UserDefaults.standard.removeObject(forKey: customKeyNameStorageKey)
+        if selectedKeyID == "custom" {
+            selectKey(AccessKey.nick.id)
         }
     }
 
-    static var isUsingCustomKey: Bool {
-        let stored = UserDefaults.standard.string(forKey: accessKeyStorageKey) ?? ""
-        return !stored.isEmpty && stored != defaultPrivateKey
+    static var hasCustomKey: Bool {
+        let key = UserDefaults.standard.string(forKey: customKeyStorageKey) ?? ""
+        return !key.isEmpty
+    }
+
+    static var allAvailableKeys: [AccessKey] {
+        var keys = AccessKey.presets
+        if hasCustomKey {
+            let key = UserDefaults.standard.string(forKey: customKeyStorageKey) ?? ""
+            let name = UserDefaults.standard.string(forKey: customKeyNameStorageKey) ?? "Custom"
+            keys.append(AccessKey(id: "custom", name: name, key: key, isPreset: false))
+        }
+        return keys
     }
 
     private let service = NordVPNService()
@@ -36,6 +77,7 @@ nonisolated struct ConfigGenerator: Sendable {
     }
 
     private func generateWireGuard(from servers: [ServerResponse]) throws -> [GeneratedConfig] {
+        let privateKey = Self.activePrivateKey
         var configs: [GeneratedConfig] = []
 
         for server in servers {
@@ -50,7 +92,7 @@ nonisolated struct ConfigGenerator: Sendable {
 
             let content = """
             [Interface]
-            PrivateKey = \(Self.activePrivateKey)
+            PrivateKey = \(privateKey)
             Address = 10.5.0.2/32
             DNS = 103.86.96.100, 103.86.99.100
 
@@ -76,7 +118,7 @@ nonisolated struct ConfigGenerator: Sendable {
             ))
         }
 
-        if configs.isEmpty {
+        guard !configs.isEmpty else {
             throw NordVPNError.noServersFound
         }
 
@@ -131,7 +173,7 @@ nonisolated struct ConfigGenerator: Sendable {
 
         configs.sort { $0.hostname < $1.hostname }
 
-        if configs.isEmpty {
+        guard !configs.isEmpty else {
             throw NordVPNError.noServersFound
         }
 
